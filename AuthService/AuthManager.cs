@@ -7,48 +7,58 @@ namespace HRManagementService.AuthService
     public class AuthManager
     {
         private readonly AuthRepository _authRepo;
+        private readonly EmployeeRepository _employeeRepo;
 
-        public AuthManager(AuthRepository authRepo)
+        public AuthManager(AuthRepository authRepo, EmployeeRepository employeeRepo)
         {
             _authRepo = authRepo;
+            _employeeRepo = employeeRepo;
         }
 
         public async Task<AuthUser?> LoginAsync()
         {
-            Console.Write("Enter your Employee ID: ");
-            var employeeId = Console.ReadLine()?.Trim();
+            const int maxAttempts = 3;
 
-            if (string.IsNullOrEmpty(employeeId))
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                Console.WriteLine("Employee ID cannot be empty.");
-                return null;
-            }
+                Console.Write($"Enter your Alias (attempt {attempt}/{maxAttempts}): ");
+                var alias = Console.ReadLine()?.Trim();
 
-            var user = await _authRepo.GetByEmployeeIdAsync(employeeId);
-            if (user != null)
-            {
-                Console.WriteLine($"\nWelcome, {user.Name}! Role: {user.Role}");
-                return user;
-            }
-
-            Console.WriteLine("\nUser not found.");
-            var anyExists = await _authRepo.AnyUserExistsAsync();
-
-            if (!anyExists)
-            {
-                Console.Write("Are you setting up for the first time? (y/n): ");
-                var answer = Console.ReadLine()?.Trim().ToLower();
-                if (answer == "y")
+                if (string.IsNullOrEmpty(alias))
                 {
-                    return await FirstTimeSetupAsync(employeeId);
+                    Console.WriteLine("Alias cannot be empty.");
+                    continue;
                 }
+
+                var user = await _authRepo.GetByAliasAsync(alias);
+                if (user != null)
+                {
+                    Console.WriteLine($"\nWelcome, {user.Name}! Role: {user.Role}");
+                    return user;
+                }
+
+                Console.WriteLine("\nUser not found.");
+                var anyExists = await _authRepo.AnyUserExistsAsync();
+
+                if (!anyExists)
+                {
+                    Console.Write("Are you setting up for the first time? (y/n): ");
+                    var answer = Console.ReadLine()?.Trim().ToLower();
+                    if (answer == "y")
+                    {
+                        return await FirstTimeSetupAsync(alias);
+                    }
+                }
+
+                if (attempt < maxAttempts)
+                    Console.WriteLine("Please try again.\n");
             }
 
             Console.WriteLine("Contact HR for access.");
             return null;
         }
 
-        private async Task<AuthUser> FirstTimeSetupAsync(string employeeId)
+        private async Task<AuthUser> FirstTimeSetupAsync(string alias)
         {
             Console.WriteLine("\n--- First Time Setup: HR Admin ---");
 
@@ -58,12 +68,27 @@ namespace HRManagementService.AuthService
             Console.Write("Enter your email: ");
             var email = Console.ReadLine()?.Trim() ?? string.Empty;
 
-            var hrUser = new AuthUser
+            var employeeId = Guid.NewGuid().ToString();
+
+            // Create Employee record first
+            var employee = new Employee
             {
                 Id = employeeId,
+                Name = name,
+                Email = email,
+                Alias = alias,
+                JoiningDate = DateTime.UtcNow
+            };
+            await _employeeRepo.CreateEmployeeAsync(employee);
+
+            // Create AuthUser with same employeeId
+            var hrUser = new AuthUser
+            {
+                Id = Guid.NewGuid().ToString(),
                 EmployeeId = employeeId,
                 Name = name,
                 Email = email,
+                Alias = alias,
                 Role = UserRole.HR
             };
 

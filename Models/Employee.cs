@@ -1,15 +1,11 @@
 using Newtonsoft.Json;
-using HRManagementService.Enums;
 
 namespace HRManagementService.Models
 {
-    public class AuthUser
+    public class Employee
     {
         [JsonProperty("id")]
         public string Id { get; set; } = string.Empty;
-
-        [JsonProperty("employeeId")]
-        public string EmployeeId { get; set; } = string.Empty;
 
         [JsonProperty("name")]
         public string Name { get; set; } = string.Empty;
@@ -20,7 +16,10 @@ namespace HRManagementService.Models
         [JsonProperty("alias")]
         public string Alias { get; set; } = string.Empty;
 
-        [JsonProperty("role")]
-        public UserRole Role { get; set; }
+        [JsonProperty("teamId")]
+        public string TeamId { get; set; } = string.Empty;
+
+        [JsonProperty("joiningDate")]
+        public DateTime JoiningDate { get; set; }
     }
 }
