@@ -21,5 +21,11 @@ namespace HRManagementService.Models
 
         [JsonProperty("joiningDate")]
         public DateTime JoiningDate { get; set; }
+
+        [JsonProperty("status")]
+        public string Status { get; set; } = "Active";
+
+        [JsonProperty("terminatedOn")]
+        public DateTime? TerminatedOn { get; set; }
     }
 }

@@ -14,6 +14,7 @@ namespace HRManagementService.EmployeeService
         private readonly EmployeeRepository _employeeRepo;
         private readonly AuthRepository _authRepo;
         private readonly EmployeePipeline _pipeline;
+        private readonly OffboardingPipeline _offboardingPipeline;
 
         public EmployeeManager(
             TeamRepository teamRepo,
@@ -22,7 +23,8 @@ namespace HRManagementService.EmployeeService
             OnboardingRepository onboardingRepo,
             EmployeeRepository employeeRepo,
             AuthRepository authRepo,
-            EmployeePipeline pipeline)
+            EmployeePipeline pipeline,
+            OffboardingPipeline offboardingPipeline)
         {
             _teamRepo = teamRepo;
             _payrollRepo = payrollRepo;
@@ -31,6 +33,7 @@ namespace HRManagementService.EmployeeService
             _employeeRepo = employeeRepo;
             _authRepo = authRepo;
             _pipeline = pipeline;
+            _offboardingPipeline = offboardingPipeline;
         }
 
         public async Task AddNewEmployeeAsync(AuthUser currentUser)
@@ -168,10 +171,10 @@ namespace HRManagementService.EmployeeService
         public async Task CheckOnboardingStatusAsync()
         {
             Console.WriteLine("\n========================================");
-            Console.WriteLine("   Check Onboarding Status");
+            Console.WriteLine("   Check Pipeline Status");
             Console.WriteLine("========================================\n");
 
-            Console.WriteLine("  1. View all in-progress onboardings");
+            Console.WriteLine("  1. View all in-progress pipelines");
             Console.WriteLine("  2. Search by employee name");
             Console.Write("\nChoice: ");
             var choice = Console.ReadLine()?.Trim();
@@ -198,13 +201,16 @@ namespace HRManagementService.EmployeeService
 
             if (results.Count == 0)
             {
-                Console.WriteLine("\nNo onboarding records found.");
+                Console.WriteLine("\nNo pipeline records found.");
                 return;
             }
 
             Console.WriteLine($"\n--- Results ({results.Count}) ---\n");
             foreach (var status in results)
             {
+                var isOffboarding = status.Steps.Any(s => s.Name == "Mark Terminated");
+                var pipelineType = isOffboarding ? "OFFBOARDING" : "ONBOARDING";
+
                 var icon = status.OverallStatus switch
                 {
                     "Completed" => "[DONE]",
@@ -214,8 +220,8 @@ namespace HRManagementService.EmployeeService
                     _ => "[UNKNOWN]"
                 };
 
-                Console.WriteLine($"  {status.EmployeeName} (Employee ID: {status.EmployeeId}) — {icon}");
-                Console.WriteLine($"    Onboarding ID: {status.Id}");
+                Console.WriteLine($"  [{pipelineType}] {status.EmployeeName} — {icon}");
+                Console.WriteLine($"    Pipeline ID: {status.Id}");
                 Console.WriteLine($"    Started: {status.StartedAt:yyyy-MM-dd HH:mm:ss} UTC");
                 if (status.CompletedAt.HasValue)
                     Console.WriteLine($"    Completed: {status.CompletedAt:yyyy-MM-dd HH:mm:ss} UTC");
@@ -285,6 +291,93 @@ namespace HRManagementService.EmployeeService
             else
             {
                 Console.WriteLine("Cancelled.");
+            }
+        }
+
+        public async Task TerminateEmployeeAsync(AuthUser currentUser)
+        {
+            Console.WriteLine("\n========================================");
+            Console.WriteLine("   Terminate Employee");
+            Console.WriteLine("========================================\n");
+
+            var allEmployees = await _employeeRepo.GetAllEmployeesAsync();
+            var activeEmployees = allEmployees
+                .Where(e => e.Status != "Terminated" && e.Alias != currentUser.Alias)
+                .ToList();
+
+            if (activeEmployees.Count == 0)
+            {
+                Console.WriteLine("No active employees to terminate.");
+                return;
+            }
+
+            Console.WriteLine("  Select employee to terminate:\n");
+            for (int i = 0; i < activeEmployees.Count; i++)
+            {
+                Console.WriteLine($"    {i + 1}. {activeEmployees[i].Name} ({activeEmployees[i].Alias})");
+            }
+            Console.Write("\n  Choice (0 to cancel): ");
+
+            if (!int.TryParse(Console.ReadLine()?.Trim(), out int sel) || sel < 0 || sel > activeEmployees.Count)
+            {
+                Console.WriteLine("  Invalid selection.");
+                return;
+            }
+            if (sel == 0) return;
+
+            var employee = activeEmployees[sel - 1];
+
+            // Check if this employee is a manager
+            var allTeams = await _teamRepo.GetAllTeamsAsync();
+            var isManager = allTeams.Any(t => t.ManagerId == employee.Alias);
+            var managedTeam = allTeams.FirstOrDefault(t => t.ManagerId == employee.Alias);
+
+            // Show summary
+            Console.WriteLine($"\n  --- Employee Details ---");
+            Console.WriteLine($"  Name:      {employee.Name}");
+            Console.WriteLine($"  Alias:     {employee.Alias}");
+            Console.WriteLine($"  Team:      {employee.TeamId}");
+            Console.WriteLine($"  Role:      {(isManager ? "Manager" : "Employee")}");
+
+            if (isManager && managedTeam != null)
+            {
+                Console.WriteLine($"\n  ⚠ WARNING: This employee manages team '{managedTeam.TeamName}'");
+                Console.WriteLine($"  Team has {managedTeam.EmployeeIds.Count} member(s).");
+
+                if (!string.IsNullOrEmpty(managedTeam.SkipManagerId))
+                {
+                    Console.WriteLine($"  → Members will be reassigned to skip manager: {managedTeam.SkipManagerId}");
+                }
+                else
+                {
+                    Console.WriteLine($"  → No skip manager set. Members will stay in team without a manager.");
+                }
+            }
+
+            Console.Write("\n  Confirm termination? (yes/no): ");
+            var confirm = Console.ReadLine()?.Trim().ToLower();
+            if (confirm != "yes")
+            {
+                Console.WriteLine("  Termination cancelled.");
+                return;
+            }
+
+            var offboardingData = new OffboardingEvent
+            {
+                EmployeeId = employee.Id,
+                Alias = employee.Alias,
+                Name = employee.Name,
+                TeamId = employee.TeamId,
+                IsManager = isManager
+            };
+
+            var statusId = await _offboardingPipeline.StartAsync(
+                offboardingData, currentUser.Alias, currentUser.Role.ToString());
+
+            if (statusId != null)
+            {
+                Console.WriteLine($"\n  Offboarding pipeline started. Status ID: {statusId}");
+                Console.WriteLine("  Use 'Check Onboarding Status' to track progress.");
             }
         }
     }

@@ -10,7 +10,6 @@ namespace HRManagementService.Pipeline
         private readonly TeamRepository _teamRepo;
         private readonly PayrollRepository _payrollRepo;
         private readonly HolidayRepository _holidayRepo;
-        private readonly PerformanceRepository _performanceRepo;
         private readonly AuthRepository _authRepo;
         private readonly AuditRepository _auditRepo;
         private readonly OnboardingRepository _onboardingRepo;
@@ -22,7 +21,6 @@ namespace HRManagementService.Pipeline
             TeamRepository teamRepo,
             PayrollRepository payrollRepo,
             HolidayRepository holidayRepo,
-            PerformanceRepository performanceRepo,
             AuthRepository authRepo,
             AuditRepository auditRepo,
             OnboardingRepository onboardingRepo,
@@ -33,7 +31,6 @@ namespace HRManagementService.Pipeline
             _teamRepo = teamRepo;
             _payrollRepo = payrollRepo;
             _holidayRepo = holidayRepo;
-            _performanceRepo = performanceRepo;
             _authRepo = authRepo;
             _auditRepo = auditRepo;
             _onboardingRepo = onboardingRepo;
@@ -43,8 +40,7 @@ namespace HRManagementService.Pipeline
 
         public async Task<string?> StartAsync(OnboardingEvent onboardingData, string performedBy, string performedByRole)
         {
-            // === STEP 1: Create Employee (Sequential — must succeed before anything else) ===
-            Console.WriteLine("\n[Step 1/7] Creating employee record...");
+            Console.WriteLine("\n[Step 1/6] Creating employee record...");
             Employee employee;
             try
             {
@@ -68,7 +64,6 @@ namespace HRManagementService.Pipeline
                 return null;
             }
 
-            // === Save onboarding status tracker ===
             var status = new OnboardingStatus
             {
                 Id = Guid.NewGuid().ToString(),
@@ -80,7 +75,6 @@ namespace HRManagementService.Pipeline
                     new() { Name = "Assign to Team", Status = "Pending" },
                     new() { Name = "Create Payroll", Status = "Pending" },
                     new() { Name = "Create Holiday Bank", Status = "Pending" },
-                    new() { Name = "Create Performance Record", Status = "Pending" },
                     new() { Name = "Create Auth User", Status = "Pending" },
                     new() { Name = "Audit Log", Status = "Pending" }
                 }
@@ -88,7 +82,6 @@ namespace HRManagementService.Pipeline
 
             await _onboardingRepo.CreateAsync(status);
 
-            // === STEPS 2-6: Fire in background via Event Hub ===
             _ = Task.Run(() => RunBackgroundStepsAsync(status, onboardingData, performedBy, performedByRole));
 
             return status.Id;
@@ -98,11 +91,11 @@ namespace HRManagementService.Pipeline
         {
             try
             {
-                // Track parallel step results locally to avoid concurrent Cosmos writes
-                var stepResults = new (bool success, string? error)[5];
+                var stepResults = new (bool success, string? error)[4];
 
                 var parallelTasks = new List<Task>
                 {
+                    // Step 2: Assign to Team
                     Task.Run(async () => {
                         try
                         {
@@ -119,7 +112,6 @@ namespace HRManagementService.Pipeline
                                         }
                                         else
                                         {
-                                            // Remove from any other team first (one team rule)
                                             var allTeams = await _teamRepo.GetAllTeamsAsync();
                                             foreach (var other in allTeams)
                                             {
@@ -142,6 +134,7 @@ namespace HRManagementService.Pipeline
                         catch (Exception ex) { stepResults[0] = (false, ex.Message); }
                     }),
 
+                    // Step 3: Create Payroll
                     Task.Run(async () => {
                         try
                         {
@@ -153,6 +146,7 @@ namespace HRManagementService.Pipeline
                                     {
                                         Id = Guid.NewGuid().ToString(),
                                         EmployeeId = evt.EmployeeId,
+                                        Alias = evt.Alias,
                                         Level = evt.Level,
                                         Salary = evt.Salary,
                                         LastUpdated = DateTime.UtcNow
@@ -165,6 +159,7 @@ namespace HRManagementService.Pipeline
                         catch (Exception ex) { stepResults[1] = (false, ex.Message); }
                     }),
 
+                    // Step 4: Create Holiday Bank
                     Task.Run(async () => {
                         try
                         {
@@ -186,26 +181,7 @@ namespace HRManagementService.Pipeline
                         catch (Exception ex) { stepResults[2] = (false, ex.Message); }
                     }),
 
-                    Task.Run(async () => {
-                        try
-                        {
-                            await _serviceBus.PublishAndProcessAsync<bool>(
-                                _queueNames["PerformanceReviews"], data, async json =>
-                                {
-                                    var evt = JsonConvert.DeserializeObject<OnboardingEvent>(json)!;
-                                    var review = new PerformanceReview
-                                    {
-                                        Id = Guid.NewGuid().ToString(),
-                                        Alias = evt.Alias
-                                    };
-                                    await _performanceRepo.CreatePerformanceRecordAsync(review);
-                                    return true;
-                                });
-                            stepResults[3] = (true, null);
-                        }
-                        catch (Exception ex) { stepResults[3] = (false, ex.Message); }
-                    }),
-
+                    // Step 5: Create Auth User
                     Task.Run(async () => {
                         try
                         {
@@ -225,16 +201,15 @@ namespace HRManagementService.Pipeline
                                     await _authRepo.CreateUserAsync(authUser);
                                     return true;
                                 });
-                            stepResults[4] = (true, null);
+                            stepResults[3] = (true, null);
                         }
-                        catch (Exception ex) { stepResults[4] = (false, ex.Message); }
+                        catch (Exception ex) { stepResults[3] = (false, ex.Message); }
                     })
                 };
 
                 await Task.WhenAll(parallelTasks);
 
-                // Update all step statuses in ONE write (no race condition)
-                for (int i = 0; i < 5; i++)
+                for (int i = 0; i < 4; i++)
                 {
                     if (stepResults[i].success)
                     {
@@ -248,7 +223,7 @@ namespace HRManagementService.Pipeline
                     }
                 }
 
-                // === STEP 7: Audit Log (runs after all parallel steps) ===
+                // Step 6: Audit Log
                 try
                 {
                     var auditLog = new AuditLog
@@ -260,22 +235,21 @@ namespace HRManagementService.Pipeline
                         Details = $"Onboarded {data.Name} ({data.Email}) to team {data.TeamId} at level {data.Level}"
                     };
                     await _auditRepo.LogAsync(auditLog);
-                    status.Steps[6].Status = "Done";
-                    status.Steps[6].CompletedAt = DateTime.UtcNow;
+                    status.Steps[5].Status = "Done";
+                    status.Steps[5].CompletedAt = DateTime.UtcNow;
                 }
                 catch (Exception ex)
                 {
-                    status.Steps[6].Status = "Failed";
-                    status.Steps[6].ErrorMessage = ex.Message;
+                    status.Steps[5].Status = "Failed";
+                    status.Steps[5].ErrorMessage = ex.Message;
                 }
 
-                // Single final write with all results
                 var allDone = status.Steps.All(s => s.Status == "Done");
                 status.OverallStatus = allDone ? "Completed" : "CompletedWithErrors";
                 status.CompletedAt = DateTime.UtcNow;
                 await _onboardingRepo.UpdateAsync(status);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 status.OverallStatus = "Failed";
                 status.CompletedAt = DateTime.UtcNow;

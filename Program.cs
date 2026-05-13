@@ -81,6 +81,7 @@ var authManager = new AuthManager(authRepo, employeeRepo);
 var queueNames = new Dictionary<string, string>
 {
     ["EmployeeOnboarding"] = config["ServiceBus:Queues:EmployeeOnboarding"]!,
+    ["EmployeeOffboarding"] = config["ServiceBus:Queues:EmployeeOffboarding"]!,
     ["PayrollOperations"] = config["ServiceBus:Queues:PayrollOperations"]!,
     ["HolidayRequests"] = config["ServiceBus:Queues:HolidayRequests"]!,
     ["PerformanceReviews"] = config["ServiceBus:Queues:PerformanceReviews"]!,
@@ -89,105 +90,130 @@ var queueNames = new Dictionary<string, string>
 
 var employeePipeline = new EmployeePipeline(
     employeeRepo, teamRepo, payrollRepo, holidayRepo,
-    performanceRepo, authRepo, auditRepo, onboardingRepo, serviceBus, queueNames);
+    authRepo, auditRepo, onboardingRepo, serviceBus, queueNames);
 
-var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, employeePipeline);
+var offboardingPipeline = new OffboardingPipeline(
+    employeeRepo, teamRepo, payrollRepo,
+    authRepo, auditRepo, onboardingRepo, serviceBus, queueNames);
+
+var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, employeePipeline, offboardingPipeline);
 var teamManager = new TeamManager(teamRepo, authRepo);
 var salaryLevelManager = new SalaryLevelManager(payrollRepo, employeeRepo, teamRepo);
-var performanceManager = new PerformanceManager(performanceRepo);
+var performanceManager = new PerformanceManager(performanceRepo, teamRepo, authRepo);
 var holidayManager = new HolidayManager(holidayRepo, employeeRepo, teamRepo);
-
-Console.WriteLine("\n========================================");
-Console.WriteLine("   HR Management Service");
-Console.WriteLine("========================================\n");
-
-var currentUser = await authManager.LoginAsync();
-if (currentUser == null)
-{
-    Console.WriteLine("Login failed. Exiting.");
-    return;
-}
 
 while (true)
 {
     Console.WriteLine("\n========================================");
-    Console.WriteLine($"  Menu ({currentUser.Role})");
-    Console.WriteLine("========================================");
+    Console.WriteLine("   HR Management Service");
+    Console.WriteLine("========================================\n");
 
-    if (currentUser.Role == UserRole.HR)
+    var currentUser = await authManager.LoginAsync();
+    if (currentUser == null)
     {
-        Console.WriteLine("  1.  Employee Onboarding");
-        Console.WriteLine("  2.  Give Promotion / Raise        [Coming Soon]");
-        Console.WriteLine("  3.  Fire Employee                 [Coming Soon]");
-        Console.WriteLine("  4.  Setup Salary Levels");
-        Console.WriteLine("  5.  Holidays");
-        Console.WriteLine("  6.  Team Management");
-        Console.WriteLine("  7.  View Audit Logs               [Coming Soon]");
-        Console.WriteLine("  8.  Check Employee Performance    [Coming Soon]");
-        Console.WriteLine("  9.  Check Someone's Salary");
-        Console.WriteLine("  10. Update Personal Info");
-        Console.WriteLine("  11. Submit Own Performance Review");
-        Console.WriteLine("  12. Exit");
-    }
-    else if (currentUser.Role == UserRole.Manager)
-    {
-        Console.WriteLine("  1.  Check Employee Performance    [Coming Soon]");
-        Console.WriteLine("  2.  Add Reportee Performance Review [Coming Soon]");
-        Console.WriteLine("  3.  Flag Employee for Termination [Coming Soon]");
-        Console.WriteLine("  4.  Team Management");
-        Console.WriteLine("  5.  Check Someone's Salary");
-        Console.WriteLine("  6.  Check Own Salary");
-        Console.WriteLine("  7.  Check Readiness for Next Step [Coming Soon]");
-        Console.WriteLine("  8.  Holidays");
-        Console.WriteLine("  9.  Update Personal Info");
-        Console.WriteLine("  10. Submit Own Performance Review");
-        Console.WriteLine("  11. Exit");
-    }
-    else
-    {
-        Console.WriteLine("  1. Holidays");
-        Console.WriteLine("  2. Check Own Salary");
-        Console.WriteLine("  3. Update Personal Info");
-        Console.WriteLine("  4. Submit Own Performance Review");
-        Console.WriteLine("  5. Exit");
+        Console.WriteLine("Login failed. Exiting.");
+        return;
     }
 
-    Console.Write("\nChoice: ");
-    var input = Console.ReadLine()?.Trim();
+    bool loggedOut = false;
 
-    var exitOption = currentUser.Role switch
+    while (!loggedOut)
     {
-        UserRole.HR => "12",
-        UserRole.Manager => "11",
-        UserRole.Employee => "5",
-        _ => "1"
-    };
+        Console.WriteLine("\n========================================");
+        Console.WriteLine($"  Menu ({currentUser.Role})");
+        Console.WriteLine("========================================");
 
-    if (input == exitOption)
-    {
-        Console.WriteLine("\nGoodbye!");
-        break;
-    }
+        if (currentUser.Role == UserRole.HR)
+        {
+            Console.WriteLine("  1.  Employee Actions");
+            Console.WriteLine("  2.  Setup Salary Levels");
+            Console.WriteLine("  3.  Holidays");
+            Console.WriteLine("  4.  Team Management");
+            Console.WriteLine("  5.  Payroll");
+            Console.WriteLine("  6.  Update Personal Info");
+            Console.WriteLine("  7.  Logout");
+            Console.WriteLine("  8.  Exit");
+        }
+        else if (currentUser.Role == UserRole.Manager)
+        {
+            Console.WriteLine("  1.  Performance Reviews");
+            Console.WriteLine("  2.  Payroll");
+            Console.WriteLine("  3.  Holidays");
+            Console.WriteLine("  4.  Update Personal Info");
+            Console.WriteLine("  5.  Logout");
+            Console.WriteLine("  6.  Exit");
+        }
+        else
+        {
+            Console.WriteLine("  1. Holidays");
+            Console.WriteLine("  2. Check Own Salary");
+            Console.WriteLine("  3. Update Personal Info");
+            Console.WriteLine("  4. Submit Own Performance Review");
+            Console.WriteLine("  5. Logout");
+            Console.WriteLine("  6. Exit");
+        }
 
+        Console.Write("\nChoice: ");
+        var input = Console.ReadLine()?.Trim();
+
+        var logoutOption = currentUser.Role switch
+        {
+            UserRole.HR => "7",
+            UserRole.Manager => "5",
+            UserRole.Employee => "5",
+            _ => "1"
+        };
+
+        var exitOption = currentUser.Role switch
+        {
+            UserRole.HR => "8",
+            UserRole.Manager => "6",
+            UserRole.Employee => "6",
+            _ => "1"
+        };
+
+        if (input == logoutOption)
+        {
+            Console.WriteLine($"\nLogged out. Goodbye, {currentUser.Name}!");
+            loggedOut = true;
+            continue;
+        }
+
+        if (input == exitOption)
+        {
+            Console.WriteLine("\nGoodbye!");
+            return;
+        }
+
+    // --- HR: Employee Actions ---
     if (currentUser.Role == UserRole.HR && input == "1")
     {
         Console.WriteLine("\n  1. Add New Employee");
-        Console.WriteLine("  2. Check Onboarding Status");
+        Console.WriteLine("  2. Terminate Employee");
+        Console.WriteLine("  3. Give Promotion            [Coming Soon]");
+        Console.WriteLine("  4. Give Raise                [Coming Soon]");
+        Console.WriteLine("  5. Check Pipeline Status");
         Console.Write("\nChoice: ");
         var subChoice = Console.ReadLine()?.Trim();
         if (subChoice == "1")
             await employeeManager.AddNewEmployeeAsync(currentUser);
         else if (subChoice == "2")
+            await employeeManager.TerminateEmployeeAsync(currentUser);
+        else if (subChoice == "3" || subChoice == "4")
+            Console.WriteLine("\n  This feature is coming soon!");
+        else if (subChoice == "5")
             await employeeManager.CheckOnboardingStatusAsync();
         else
             Console.WriteLine("Invalid choice.");
     }
-    else if (currentUser.Role == UserRole.HR && input == "4")
+    // --- HR: Setup Salary Levels ---
+    else if (currentUser.Role == UserRole.HR && input == "2")
     {
         await salaryLevelManager.SetupSalaryLevelsAsync();
     }
-    else if ((currentUser.Role == UserRole.HR && input == "5") ||
-             (currentUser.Role == UserRole.Manager && input == "8") ||
+    // --- Holidays (HR=3, Manager=3, Employee=1) ---
+    else if ((currentUser.Role == UserRole.HR && input == "3") ||
+             (currentUser.Role == UserRole.Manager && input == "3") ||
              (currentUser.Role == UserRole.Employee && input == "1"))
     {
         Console.WriteLine("\n  1. View Fixed Holidays");
@@ -212,8 +238,8 @@ while (true)
         else
             Console.WriteLine("Invalid choice.");
     }
-    else if ((currentUser.Role == UserRole.HR && input == "6") ||
-             (currentUser.Role == UserRole.Manager && input == "4"))
+    // --- Team Management (HR=4) ---
+    else if (currentUser.Role == UserRole.HR && input == "4")
     {
         Console.WriteLine("\n  1. Create Team");
         Console.WriteLine("  2. Update Team");
@@ -229,30 +255,70 @@ while (true)
         else
             Console.WriteLine("Invalid choice.");
     }
-    else if ((currentUser.Role == UserRole.HR && input == "10") ||
-             (currentUser.Role == UserRole.Manager && input == "9") ||
-             (currentUser.Role == UserRole.Employee && input == "3"))
+    // --- Performance Reviews (Manager=1) ---
+    else if (currentUser.Role == UserRole.Manager && input == "1")
     {
-        await employeeManager.UpdatePersonalInfoAsync(currentUser);
+        Console.WriteLine("\n  1. Review Team Performance");
+        Console.WriteLine("  2. Submit Own Performance Review");
+        Console.WriteLine("  3. Check Own History");
+        Console.Write("\nChoice: ");
+        var subChoice = Console.ReadLine()?.Trim();
+        if (subChoice == "1")
+            await performanceManager.ReviewTeamPerformanceAsync(currentUser);
+        else if (subChoice == "2")
+            await performanceManager.SubmitOwnReviewAsync(currentUser);
+        else if (subChoice == "3")
+            await performanceManager.CheckOwnHistoryAsync(currentUser);
+        else
+            Console.WriteLine("Invalid choice.");
     }
-    else if ((currentUser.Role == UserRole.HR && input == "9") ||
-             (currentUser.Role == UserRole.Manager && input == "5"))
+    // --- Employee: Performance Review (4) ---
+    else if (currentUser.Role == UserRole.Employee && input == "4")
+    {
+        Console.WriteLine("\n  1. Submit Performance Review");
+        Console.WriteLine("  2. Check History");
+        Console.Write("\nChoice: ");
+        var subChoice = Console.ReadLine()?.Trim();
+        if (subChoice == "1")
+            await performanceManager.SubmitOwnReviewAsync(currentUser);
+        else if (subChoice == "2")
+            await performanceManager.CheckOwnHistoryAsync(currentUser);
+        else
+            Console.WriteLine("Invalid choice.");
+    }
+    // --- Payroll (HR=5, Manager=2) ---
+    else if (currentUser.Role == UserRole.HR && input == "5")
     {
         await salaryLevelManager.CheckSomeonesSalaryAsync(currentUser);
     }
-    else if ((currentUser.Role == UserRole.Manager && input == "6") ||
-             (currentUser.Role == UserRole.Employee && input == "2"))
+    else if (currentUser.Role == UserRole.Manager && input == "2")
+    {
+        Console.WriteLine("\n  1. Check Reportee Salary");
+        Console.WriteLine("  2. Check Own Salary");
+        Console.Write("\nChoice: ");
+        var subChoice = Console.ReadLine()?.Trim();
+        if (subChoice == "1")
+            await salaryLevelManager.CheckSomeonesSalaryAsync(currentUser);
+        else if (subChoice == "2")
+            await salaryLevelManager.CheckOwnSalaryAsync(currentUser);
+        else
+            Console.WriteLine("Invalid choice.");
+    }
+    // --- Employee: Check Own Salary (2) ---
+    else if (currentUser.Role == UserRole.Employee && input == "2")
     {
         await salaryLevelManager.CheckOwnSalaryAsync(currentUser);
     }
-    else if ((currentUser.Role == UserRole.HR && input == "11") ||
-             (currentUser.Role == UserRole.Manager && input == "10") ||
-             (currentUser.Role == UserRole.Employee && input == "4"))
+    // --- Update Personal Info (HR=6, Manager=4, Employee=3) ---
+    else if ((currentUser.Role == UserRole.HR && input == "6") ||
+             (currentUser.Role == UserRole.Manager && input == "4") ||
+             (currentUser.Role == UserRole.Employee && input == "3"))
     {
-        await performanceManager.SubmitOwnReviewAsync(currentUser);
+        await employeeManager.UpdatePersonalInfoAsync(currentUser);
     }
     else
     {
         Console.WriteLine("This feature is coming soon!");
     }
 }
+} // outer login loop

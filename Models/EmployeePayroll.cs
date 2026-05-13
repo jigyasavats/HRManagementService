@@ -10,6 +10,9 @@ namespace HRManagementService.Models
         [JsonProperty("employeeId")]
         public string EmployeeId { get; set; } = string.Empty;
 
+        [JsonProperty("alias")]
+        public string Alias { get; set; } = string.Empty;
+
         [JsonProperty("level")]
         public string Level { get; set; } = string.Empty;
 
@@ -18,5 +21,8 @@ namespace HRManagementService.Models
 
         [JsonProperty("lastUpdated")]
         public DateTime LastUpdated { get; set; }
+
+        [JsonProperty("status")]
+        public string Status { get; set; } = "Active";
     }
 }

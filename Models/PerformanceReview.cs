@@ -11,39 +11,48 @@ namespace HRManagementService.Models
         public string Alias { get; set; } = string.Empty;
 
         [JsonProperty("reviews")]
-        public List<ReviewEntry> Reviews { get; set; } = new();
-
-        [JsonProperty("flaggedForTermination")]
-        public bool FlaggedForTermination { get; set; } = false;
-
-        [JsonProperty("flaggedBy")]
-        public string FlaggedBy { get; set; } = string.Empty;
-
-        [JsonProperty("flagReason")]
-        public string FlagReason { get; set; } = string.Empty;
-
-        [JsonProperty("flagDate")]
-        public DateTime? FlagDate { get; set; }
+        public List<YearlyReview> Reviews { get; set; } = new();
     }
 
-    public class ReviewEntry
+    public class YearlyReview
     {
         [JsonProperty("reviewId")]
         public string ReviewId { get; set; } = Guid.NewGuid().ToString();
 
+        [JsonProperty("year")]
+        public int Year { get; set; }
+
+        // Employee fills these
+        [JsonProperty("accomplishments")]
+        public string Accomplishments { get; set; } = string.Empty;
+
+        [JsonProperty("improvements")]
+        public string Improvements { get; set; } = string.Empty;
+
+        [JsonProperty("goals")]
+        public string Goals { get; set; } = string.Empty;
+
+        [JsonProperty("employeeRating")]
+        public int EmployeeRating { get; set; }
+
+        [JsonProperty("submittedOn")]
+        public DateTime SubmittedOn { get; set; }
+
+        // Manager fills these
+        [JsonProperty("managerComment")]
+        public string ManagerComment { get; set; } = string.Empty;
+
+        [JsonProperty("managerRating")]
+        public int ManagerRating { get; set; }
+
         [JsonProperty("reviewedBy")]
         public string ReviewedBy { get; set; } = string.Empty;
 
-        [JsonProperty("reviewerRole")]
-        public string ReviewerRole { get; set; } = string.Empty;
+        [JsonProperty("reviewedOn")]
+        public DateTime? ReviewedOn { get; set; }
 
-        [JsonProperty("rating")]
-        public int Rating { get; set; }
-
-        [JsonProperty("comments")]
-        public string Comments { get; set; } = string.Empty;
-
-        [JsonProperty("reviewDate")]
-        public DateTime ReviewDate { get; set; } = DateTime.UtcNow;
+        // Status: "Pending Review" | "Reviewed"
+        [JsonProperty("status")]
+        public string Status { get; set; } = "Pending Review";
     }
 }

@@ -22,5 +22,8 @@ namespace HRManagementService.Models
 
         [JsonProperty("role")]
         public UserRole Role { get; set; }
+
+        [JsonProperty("isActive")]
+        public bool IsActive { get; set; } = true;
     }
 }

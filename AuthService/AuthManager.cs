@@ -33,6 +33,11 @@ namespace HRManagementService.AuthService
                 var user = await _authRepo.GetByAliasAsync(alias);
                 if (user != null)
                 {
+                    if (!user.IsActive)
+                    {
+                        Console.WriteLine("\nAccount deactivated. Contact HR.");
+                        continue;
+                    }
                     Console.WriteLine($"\nWelcome, {user.Name}! Role: {user.Role}");
                     return user;
                 }
