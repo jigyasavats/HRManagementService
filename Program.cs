@@ -148,8 +148,9 @@ while (true)
             Console.WriteLine("  4.  Team Management");
             Console.WriteLine("  5.  Payroll");
             Console.WriteLine("  6.  Update Personal Info");
-            Console.WriteLine("  7.  Logout");
-            Console.WriteLine("  8.  Exit");
+            Console.WriteLine("  7.  Ask HR Bot");
+            Console.WriteLine("  8.  Logout");
+            Console.WriteLine("  9.  Exit");
         }
         else if (currentUser.Role == UserRole.Manager)
         {
@@ -158,8 +159,9 @@ while (true)
             Console.WriteLine("  3.  Payroll");
             Console.WriteLine("  4.  Holidays");
             Console.WriteLine("  5.  Update Personal Info");
-            Console.WriteLine("  6.  Logout");
-            Console.WriteLine("  7.  Exit");
+            Console.WriteLine("  6.  Ask HR Bot");
+            Console.WriteLine("  7.  Logout");
+            Console.WriteLine("  8.  Exit");
         }
         else
         {
@@ -167,8 +169,9 @@ while (true)
             Console.WriteLine("  2. Check Own Salary");
             Console.WriteLine("  3. Update Personal Info");
             Console.WriteLine("  4. Submit Own Performance Review");
-            Console.WriteLine("  5. Logout");
-            Console.WriteLine("  6. Exit");
+            Console.WriteLine("  5. Ask HR Bot");
+            Console.WriteLine("  6. Logout");
+            Console.WriteLine("  7. Exit");
         }
 
         Console.Write("\nChoice: ");
@@ -176,17 +179,17 @@ while (true)
 
         var logoutOption = currentUser.Role switch
         {
-            UserRole.HR => "7",
-            UserRole.Manager => "6",
-            UserRole.Employee => "5",
+            UserRole.HR => "8",
+            UserRole.Manager => "7",
+            UserRole.Employee => "6",
             _ => "1"
         };
 
         var exitOption = currentUser.Role switch
         {
-            UserRole.HR => "8",
-            UserRole.Manager => "7",
-            UserRole.Employee => "6",
+            UserRole.HR => "9",
+            UserRole.Manager => "8",
+            UserRole.Employee => "7",
             _ => "1"
         };
 
@@ -337,6 +340,13 @@ while (true)
              (currentUser.Role == UserRole.Employee && input == "3"))
     {
         await employeeManager.UpdatePersonalInfoAsync(currentUser);
+    }
+    // --- Ask HR Bot (HR=7, Manager=6, Employee=5) ---
+    else if ((currentUser.Role == UserRole.HR && input == "7") ||
+             (currentUser.Role == UserRole.Manager && input == "6") ||
+             (currentUser.Role == UserRole.Employee && input == "5"))
+    {
+        await aiManager.StartHRChatbotAsync();
     }
     else
     {
