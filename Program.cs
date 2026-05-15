@@ -10,6 +10,7 @@ using HRManagementService.HolidayService;
 using HRManagementService.Pipeline;
 using HRManagementService.Enums;
 using HRManagementService.PerformanceService;
+using HRManagementService.AIService;
 
 var config = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
@@ -20,6 +21,9 @@ var vaultUrl = config["KeyVault:VaultUrl"];
 var databaseId = config["CosmosDb:DatabaseId"];
 var cosmosSecretName = config["CosmosDb:ConnectionStringSecretName"];
 var serviceBusSecretName = config["ServiceBus:ConnectionStringSecretName"];
+var openAiKeySecretName = config["OpenAI:ApiKeySecretName"];
+var openAiEndpointSecretName = config["OpenAI:EndpointSecretName"];
+var openAiDeploymentName = config["OpenAI:DeploymentName"];
 
 if (string.IsNullOrEmpty(vaultUrl) || string.IsNullOrEmpty(databaseId) || 
     string.IsNullOrEmpty(cosmosSecretName) || string.IsNullOrEmpty(serviceBusSecretName))
@@ -33,6 +37,8 @@ var secretClient = new SecretClient(new Uri(vaultUrl), new DefaultAzureCredentia
 
 string cosmosConnectionString;
 string serviceBusConnectionString;
+string openAiApiKey;
+string openAiEndpoint;
 try
 {
     var cosmosSecret = await secretClient.GetSecretAsync(cosmosSecretName);
@@ -40,6 +46,12 @@ try
 
     var serviceBusSecret = await secretClient.GetSecretAsync(serviceBusSecretName);
     serviceBusConnectionString = serviceBusSecret.Value.Value;
+
+    var openAiKeySecret = await secretClient.GetSecretAsync(openAiKeySecretName);
+    openAiApiKey = openAiKeySecret.Value.Value;
+
+    var openAiEndpointSecret = await secretClient.GetSecretAsync(openAiEndpointSecretName);
+    openAiEndpoint = openAiEndpointSecret.Value.Value;
 
     Console.WriteLine("Secrets retrieved successfully.");
 }
@@ -62,6 +74,7 @@ var holidayBankContainer = await cosmosService.GetOrCreateContainerAsync(config[
 var performanceContainer = await cosmosService.GetOrCreateContainerAsync(config["CosmosDb:Containers:EmployeePerformance"]!, "/alias");
 var auditContainer = await cosmosService.GetOrCreateContainerAsync(config["CosmosDb:Containers:AuditLogs"]!, "/performedBy");
 var onboardingContainer = await cosmosService.GetOrCreateContainerAsync(config["CosmosDb:Containers:OnboardingStatus"]!, "/id");
+var promotionContainer = await cosmosService.GetOrCreateContainerAsync("PromotionRequests", "/alias");
 
 Console.WriteLine("Containers ready.");
 
@@ -73,8 +86,11 @@ var holidayRepo = new HolidayRepository(holidayConfigContainer, holidayBankConta
 var performanceRepo = new PerformanceRepository(performanceContainer);
 var auditRepo = new AuditRepository(auditContainer);
 var onboardingRepo = new OnboardingRepository(onboardingContainer);
+var promotionRepo = new PromotionRepository(promotionContainer);
 
 var serviceBus = new ServiceBusService(serviceBusConnectionString);
+
+var aiManager = new AIManager(openAiEndpoint, openAiApiKey, openAiDeploymentName!);
 
 var authManager = new AuthManager(authRepo, employeeRepo);
 
@@ -82,6 +98,7 @@ var queueNames = new Dictionary<string, string>
 {
     ["EmployeeOnboarding"] = config["ServiceBus:Queues:EmployeeOnboarding"]!,
     ["EmployeeOffboarding"] = config["ServiceBus:Queues:EmployeeOffboarding"]!,
+    ["PromotionRaise"] = config["ServiceBus:Queues:PromotionRaise"]!,
     ["PayrollOperations"] = config["ServiceBus:Queues:PayrollOperations"]!,
     ["HolidayRequests"] = config["ServiceBus:Queues:HolidayRequests"]!,
     ["PerformanceReviews"] = config["ServiceBus:Queues:PerformanceReviews"]!,
@@ -96,7 +113,7 @@ var offboardingPipeline = new OffboardingPipeline(
     employeeRepo, teamRepo, payrollRepo,
     authRepo, auditRepo, onboardingRepo, serviceBus, queueNames);
 
-var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, employeePipeline, offboardingPipeline);
+var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, performanceRepo, promotionRepo, employeePipeline, offboardingPipeline, serviceBus, auditRepo, queueNames);
 var teamManager = new TeamManager(teamRepo, authRepo);
 var salaryLevelManager = new SalaryLevelManager(payrollRepo, employeeRepo, teamRepo);
 var performanceManager = new PerformanceManager(performanceRepo, teamRepo, authRepo);
@@ -137,11 +154,12 @@ while (true)
         else if (currentUser.Role == UserRole.Manager)
         {
             Console.WriteLine("  1.  Performance Reviews");
-            Console.WriteLine("  2.  Payroll");
-            Console.WriteLine("  3.  Holidays");
-            Console.WriteLine("  4.  Update Personal Info");
-            Console.WriteLine("  5.  Logout");
-            Console.WriteLine("  6.  Exit");
+            Console.WriteLine("  2.  Propose Promotion");
+            Console.WriteLine("  3.  Payroll");
+            Console.WriteLine("  4.  Holidays");
+            Console.WriteLine("  5.  Update Personal Info");
+            Console.WriteLine("  6.  Logout");
+            Console.WriteLine("  7.  Exit");
         }
         else
         {
@@ -159,7 +177,7 @@ while (true)
         var logoutOption = currentUser.Role switch
         {
             UserRole.HR => "7",
-            UserRole.Manager => "5",
+            UserRole.Manager => "6",
             UserRole.Employee => "5",
             _ => "1"
         };
@@ -167,7 +185,7 @@ while (true)
         var exitOption = currentUser.Role switch
         {
             UserRole.HR => "8",
-            UserRole.Manager => "6",
+            UserRole.Manager => "7",
             UserRole.Employee => "6",
             _ => "1"
         };
@@ -190,18 +208,17 @@ while (true)
     {
         Console.WriteLine("\n  1. Add New Employee");
         Console.WriteLine("  2. Terminate Employee");
-        Console.WriteLine("  3. Give Promotion            [Coming Soon]");
-        Console.WriteLine("  4. Give Raise                [Coming Soon]");
-        Console.WriteLine("  5. Check Pipeline Status");
+        Console.WriteLine("  3. Give Promotion");
+        Console.WriteLine("  4. Check Pipeline Status");
         Console.Write("\nChoice: ");
         var subChoice = Console.ReadLine()?.Trim();
         if (subChoice == "1")
             await employeeManager.AddNewEmployeeAsync(currentUser);
         else if (subChoice == "2")
             await employeeManager.TerminateEmployeeAsync(currentUser);
-        else if (subChoice == "3" || subChoice == "4")
-            Console.WriteLine("\n  This feature is coming soon!");
-        else if (subChoice == "5")
+        else if (subChoice == "3")
+            await employeeManager.ReviewPromotionAsync(currentUser);
+        else if (subChoice == "4")
             await employeeManager.CheckOnboardingStatusAsync();
         else
             Console.WriteLine("Invalid choice.");
@@ -211,9 +228,9 @@ while (true)
     {
         await salaryLevelManager.SetupSalaryLevelsAsync();
     }
-    // --- Holidays (HR=3, Manager=3, Employee=1) ---
+    // --- Holidays (HR=3, Manager=4, Employee=1) ---
     else if ((currentUser.Role == UserRole.HR && input == "3") ||
-             (currentUser.Role == UserRole.Manager && input == "3") ||
+             (currentUser.Role == UserRole.Manager && input == "4") ||
              (currentUser.Role == UserRole.Employee && input == "1"))
     {
         Console.WriteLine("\n  1. View Fixed Holidays");
@@ -272,6 +289,11 @@ while (true)
         else
             Console.WriteLine("Invalid choice.");
     }
+    // --- Propose Promotion (Manager=2) ---
+    else if (currentUser.Role == UserRole.Manager && input == "2")
+    {
+        await employeeManager.ProposePromotionAsync(currentUser);
+    }
     // --- Employee: Performance Review (4) ---
     else if (currentUser.Role == UserRole.Employee && input == "4")
     {
@@ -286,12 +308,12 @@ while (true)
         else
             Console.WriteLine("Invalid choice.");
     }
-    // --- Payroll (HR=5, Manager=2) ---
+    // --- Payroll (HR=5, Manager=3) ---
     else if (currentUser.Role == UserRole.HR && input == "5")
     {
         await salaryLevelManager.CheckSomeonesSalaryAsync(currentUser);
     }
-    else if (currentUser.Role == UserRole.Manager && input == "2")
+    else if (currentUser.Role == UserRole.Manager && input == "3")
     {
         Console.WriteLine("\n  1. Check Reportee Salary");
         Console.WriteLine("  2. Check Own Salary");
@@ -309,9 +331,9 @@ while (true)
     {
         await salaryLevelManager.CheckOwnSalaryAsync(currentUser);
     }
-    // --- Update Personal Info (HR=6, Manager=4, Employee=3) ---
+    // --- Update Personal Info (HR=6, Manager=5, Employee=3) ---
     else if ((currentUser.Role == UserRole.HR && input == "6") ||
-             (currentUser.Role == UserRole.Manager && input == "4") ||
+             (currentUser.Role == UserRole.Manager && input == "5") ||
              (currentUser.Role == UserRole.Employee && input == "3"))
     {
         await employeeManager.UpdatePersonalInfoAsync(currentUser);

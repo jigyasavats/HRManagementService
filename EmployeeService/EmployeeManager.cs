@@ -13,8 +13,13 @@ namespace HRManagementService.EmployeeService
         private readonly OnboardingRepository _onboardingRepo;
         private readonly EmployeeRepository _employeeRepo;
         private readonly AuthRepository _authRepo;
+        private readonly PerformanceRepository _performanceRepo;
+        private readonly PromotionRepository _promotionRepo;
         private readonly EmployeePipeline _pipeline;
         private readonly OffboardingPipeline _offboardingPipeline;
+        private readonly ServiceBusService _serviceBus;
+        private readonly AuditRepository _auditRepo;
+        private readonly Dictionary<string, string> _queueNames;
 
         public EmployeeManager(
             TeamRepository teamRepo,
@@ -23,8 +28,13 @@ namespace HRManagementService.EmployeeService
             OnboardingRepository onboardingRepo,
             EmployeeRepository employeeRepo,
             AuthRepository authRepo,
+            PerformanceRepository performanceRepo,
+            PromotionRepository promotionRepo,
             EmployeePipeline pipeline,
-            OffboardingPipeline offboardingPipeline)
+            OffboardingPipeline offboardingPipeline,
+            ServiceBusService serviceBus,
+            AuditRepository auditRepo,
+            Dictionary<string, string> queueNames)
         {
             _teamRepo = teamRepo;
             _payrollRepo = payrollRepo;
@@ -32,8 +42,13 @@ namespace HRManagementService.EmployeeService
             _onboardingRepo = onboardingRepo;
             _employeeRepo = employeeRepo;
             _authRepo = authRepo;
+            _performanceRepo = performanceRepo;
+            _promotionRepo = promotionRepo;
             _pipeline = pipeline;
             _offboardingPipeline = offboardingPipeline;
+            _serviceBus = serviceBus;
+            _auditRepo = auditRepo;
+            _queueNames = queueNames;
         }
 
         public async Task AddNewEmployeeAsync(AuthUser currentUser)
@@ -377,7 +392,372 @@ namespace HRManagementService.EmployeeService
             if (statusId != null)
             {
                 Console.WriteLine($"\n  Offboarding pipeline started. Status ID: {statusId}");
-                Console.WriteLine("  Use 'Check Onboarding Status' to track progress.");
+                Console.WriteLine("  Use 'Check Pipeline Status' to track progress.");
+            }
+        }
+
+        public async Task ProposePromotionAsync(AuthUser currentUser)
+        {
+            Console.WriteLine("\n========================================");
+            Console.WriteLine("   Propose Promotion");
+            Console.WriteLine("========================================\n");
+
+            // Get manager's teams
+            var allTeams = await _teamRepo.GetAllTeamsAsync();
+            var myTeams = allTeams.Where(t => t.ManagerId == currentUser.Alias).ToList();
+
+            if (myTeams.Count == 0)
+            {
+                Console.WriteLine("  You don't manage any teams.");
+                return;
+            }
+
+            // Collect all team member aliases
+            var memberAliases = myTeams.SelectMany(t => t.EmployeeIds).ToHashSet();
+            var allEmployees = await _employeeRepo.GetAllEmployeesAsync();
+            var teamMembers = allEmployees
+                .Where(e => memberAliases.Contains(e.Alias) && e.Status != "Terminated")
+                .ToList();
+
+            if (teamMembers.Count == 0)
+            {
+                Console.WriteLine("  No active team members found.");
+                return;
+            }
+
+            Console.WriteLine("  Select employee to propose for promotion:\n");
+            for (int i = 0; i < teamMembers.Count; i++)
+            {
+                Console.WriteLine($"    {i + 1}. {teamMembers[i].Name} ({teamMembers[i].Alias})");
+            }
+            Console.Write("\n  Choice (0 to cancel): ");
+
+            if (!int.TryParse(Console.ReadLine()?.Trim(), out int sel) || sel < 0 || sel > teamMembers.Count)
+            {
+                Console.WriteLine("  Invalid selection.");
+                return;
+            }
+            if (sel == 0) return;
+
+            var employee = teamMembers[sel - 1];
+
+            // Check for duplicate pending proposal
+            var existingPending = await _promotionRepo.GetPendingByAliasAsync(employee.Alias);
+            if (existingPending != null)
+            {
+                Console.WriteLine($"\n  A promotion proposal for {employee.Name} is already pending (proposed by {existingPending.ProposedBy} on {existingPending.ProposedOn:yyyy-MM-dd}).");
+                return;
+            }
+
+            // Get current payroll
+            var payroll = await _payrollRepo.GetPayrollByEmployeeIdAsync(employee.Id);
+            if (payroll == null)
+            {
+                Console.WriteLine("  No payroll record found for this employee.");
+                return;
+            }
+
+            // Get performance history
+            var perfRecord = await _performanceRepo.GetByAliasAsync(employee.Alias);
+
+            // Display performance summary
+            Console.WriteLine($"\n  --- Employee Details ---");
+            Console.WriteLine($"  Name:          {employee.Name} ({employee.Alias})");
+            Console.WriteLine($"  Current Level: {payroll.Level}");
+            Console.WriteLine($"  Current Salary: ${payroll.Salary:N0}");
+
+            if (perfRecord != null && perfRecord.Reviews.Count > 0)
+            {
+                Console.WriteLine($"\n  --- Performance History ---");
+                foreach (var review in perfRecord.Reviews.OrderByDescending(r => r.Year))
+                {
+                    Console.WriteLine($"    Year {review.Year}: Self-Rating: {review.EmployeeRating}/5 | Manager-Rating: {(review.ManagerRating > 0 ? $"{review.ManagerRating}/5" : "Not reviewed")} | Status: {review.Status}");
+                }
+            }
+            else
+            {
+                Console.WriteLine("\n  No performance reviews found.");
+            }
+
+            // Manager enters justification
+            Console.Write("\n  Justification for promotion:\n  > ");
+            var justification = Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(justification))
+            {
+                Console.WriteLine("  Justification is required. Cancelled.");
+                return;
+            }
+
+            // Confirm
+            Console.Write("\n  Submit promotion proposal? (yes/no): ");
+            var confirm = Console.ReadLine()?.Trim().ToLower();
+            if (confirm != "yes")
+            {
+                Console.WriteLine("  Cancelled.");
+                return;
+            }
+
+            var request = new PromotionRequest
+            {
+                Id = Guid.NewGuid().ToString(),
+                EmployeeId = employee.Id,
+                Alias = employee.Alias,
+                EmployeeName = employee.Name,
+                CurrentLevel = payroll.Level,
+                CurrentSalary = payroll.Salary,
+                ProposedBy = currentUser.Alias,
+                Justification = justification,
+                ProposedOn = DateTime.UtcNow
+            };
+
+            await _promotionRepo.CreateAsync(request);
+            Console.WriteLine($"\n  Promotion proposal submitted for {employee.Name}. HR will review it.");
+        }
+
+        public async Task ReviewPromotionAsync(AuthUser currentUser)
+        {
+            Console.WriteLine("\n========================================");
+            Console.WriteLine("   Review Promotion Proposals");
+            Console.WriteLine("========================================\n");
+
+            Console.WriteLine("  1. Review Pending Proposals");
+            Console.WriteLine("  2. View All Proposals (History)");
+            Console.Write("\nChoice: ");
+            var menuChoice = Console.ReadLine()?.Trim();
+
+            List<PromotionRequest> proposals;
+            if (menuChoice == "2")
+            {
+                proposals = await _promotionRepo.GetAllAsync();
+                if (proposals.Count == 0)
+                {
+                    Console.WriteLine("\n  No promotion proposals found.");
+                    return;
+                }
+                Console.WriteLine($"\n  --- All Proposals ({proposals.Count}) ---\n");
+                foreach (var p in proposals.OrderByDescending(p => p.ProposedOn))
+                {
+                    var statusLabel = p.Status switch
+                    {
+                        "Approved" => "[APPROVED]",
+                        "Rejected" => "[REJECTED]",
+                        _ => "[PENDING]"
+                    };
+                    Console.WriteLine($"    {p.EmployeeName} ({p.Alias}) — {p.CurrentLevel} → {(p.NewLevel != "" ? p.NewLevel : "?")} — {statusLabel}");
+                    Console.WriteLine($"      Proposed by: {p.ProposedBy} on {p.ProposedOn:yyyy-MM-dd}");
+                    if (p.Status != "Pending")
+                        Console.WriteLine($"      Reviewed by: {p.ReviewedBy} on {p.ReviewedOn:yyyy-MM-dd} — {p.HRComments}");
+                    Console.WriteLine();
+                }
+                return;
+            }
+
+            // Review pending proposals
+            proposals = await _promotionRepo.GetAllPendingAsync();
+            if (proposals.Count == 0)
+            {
+                Console.WriteLine("\n  No pending promotion proposals.");
+                return;
+            }
+
+            Console.WriteLine($"  Pending Proposals ({proposals.Count}):\n");
+            for (int i = 0; i < proposals.Count; i++)
+            {
+                Console.WriteLine($"    {i + 1}. {proposals[i].EmployeeName} ({proposals[i].Alias}) — Level: {proposals[i].CurrentLevel} — by {proposals[i].ProposedBy}");
+            }
+            Console.Write("\n  Select proposal to review (0 to cancel): ");
+
+            if (!int.TryParse(Console.ReadLine()?.Trim(), out int sel) || sel < 0 || sel > proposals.Count)
+            {
+                Console.WriteLine("  Invalid selection.");
+                return;
+            }
+            if (sel == 0) return;
+
+            var proposal = proposals[sel - 1];
+
+            // Show full details
+            Console.WriteLine($"\n  --- Proposal Details ---");
+            Console.WriteLine($"  Employee:       {proposal.EmployeeName} ({proposal.Alias})");
+            Console.WriteLine($"  Current Level:  {proposal.CurrentLevel}");
+            Console.WriteLine($"  Current Salary: ${proposal.CurrentSalary:N0}");
+            Console.WriteLine($"  Proposed By:    {proposal.ProposedBy}");
+            Console.WriteLine($"  Proposed On:    {proposal.ProposedOn:yyyy-MM-dd}");
+            Console.WriteLine($"  Justification:  {proposal.Justification}");
+
+            // Show performance history
+            var perfRecord = await _performanceRepo.GetByAliasAsync(proposal.Alias);
+            if (perfRecord != null && perfRecord.Reviews.Count > 0)
+            {
+                Console.WriteLine($"\n  --- Performance History ---");
+                foreach (var review in perfRecord.Reviews.OrderByDescending(r => r.Year))
+                {
+                    Console.WriteLine($"    Year {review.Year}: Self: {review.EmployeeRating}/5 | Manager: {(review.ManagerRating > 0 ? $"{review.ManagerRating}/5" : "N/A")} | Status: {review.Status}");
+                }
+            }
+
+            // Show team budget
+            var allTeams = await _teamRepo.GetAllTeamsAsync();
+            var employeeTeam = allTeams.FirstOrDefault(t => t.EmployeeIds.Contains(proposal.Alias));
+            if (employeeTeam != null)
+            {
+                Console.WriteLine($"\n  Team:           {employeeTeam.TeamName}");
+                Console.WriteLine($"  Team Budget:    ${employeeTeam.Budget:N0}");
+            }
+
+            // Approve or Reject
+            Console.Write("\n  Action (approve/reject): ");
+            var action = Console.ReadLine()?.Trim().ToLower();
+
+            if (action == "reject")
+            {
+                Console.Write("  Rejection comments: ");
+                var rejectComments = Console.ReadLine()?.Trim() ?? "";
+
+                proposal.Status = "Rejected";
+                proposal.ReviewedBy = currentUser.Alias;
+                proposal.ReviewedOn = DateTime.UtcNow;
+                proposal.HRComments = rejectComments;
+                await _promotionRepo.UpdateAsync(proposal);
+
+                Console.WriteLine($"\n  Proposal for {proposal.EmployeeName} rejected.");
+                return;
+            }
+
+            if (action != "approve")
+            {
+                Console.WriteLine("  Invalid action. Cancelled.");
+                return;
+            }
+
+            // HR enters new level
+            var allLevels = await _payrollRepo.GetAllLevelsAsync();
+            if (allLevels.Count == 0)
+            {
+                Console.WriteLine("  No salary levels configured. Set up levels first.");
+                return;
+            }
+
+            Console.WriteLine("\n  Available Levels:");
+            for (int i = 0; i < allLevels.Count; i++)
+            {
+                var marker = allLevels[i].Level == proposal.CurrentLevel ? " ← current" : "";
+                Console.WriteLine($"    {i + 1}. {allLevels[i].Level}: ${allLevels[i].MinSalary:N0} - ${allLevels[i].MaxSalary:N0}{marker}");
+            }
+            Console.Write("\n  Select new level: ");
+
+            if (!int.TryParse(Console.ReadLine()?.Trim(), out int lvlSel) || lvlSel < 1 || lvlSel > allLevels.Count)
+            {
+                Console.WriteLine("  Invalid selection. Cancelled.");
+                return;
+            }
+
+            var newLevel = allLevels[lvlSel - 1];
+
+            // HR enters new salary
+            Console.Write($"  New salary (${newLevel.MinSalary:N0} - ${newLevel.MaxSalary:N0}): $");
+            if (!decimal.TryParse(Console.ReadLine()?.Trim(), out decimal newSalary))
+            {
+                Console.WriteLine("  Invalid amount. Cancelled.");
+                return;
+            }
+
+            // Validate salary in range
+            if (newSalary < newLevel.MinSalary || newSalary > newLevel.MaxSalary)
+            {
+                Console.WriteLine($"  Salary must be between ${newLevel.MinSalary:N0} and ${newLevel.MaxSalary:N0}. Cancelled.");
+                return;
+            }
+
+            // Check budget
+            var salaryIncrease = newSalary - proposal.CurrentSalary;
+            if (employeeTeam != null && salaryIncrease > employeeTeam.Budget)
+            {
+                Console.WriteLine($"\n  ⚠ Budget insufficient! Increase: ${salaryIncrease:N0}, Available: ${employeeTeam.Budget:N0}");
+                Console.Write("  Override and continue anyway? (yes/no): ");
+                var overrideChoice = Console.ReadLine()?.Trim().ToLower();
+                if (overrideChoice != "yes")
+                {
+                    Console.WriteLine("  Cancelled.");
+                    return;
+                }
+            }
+
+            // HR comments
+            Console.Write("  Comments: ");
+            var hrComments = Console.ReadLine()?.Trim() ?? "";
+
+            // Confirm
+            Console.WriteLine($"\n  --- Promotion Summary ---");
+            Console.WriteLine($"  {proposal.EmployeeName}: {proposal.CurrentLevel} (${proposal.CurrentSalary:N0}) → {newLevel.Level} (${newSalary:N0})");
+            Console.Write("  Confirm approval? (yes/no): ");
+            var confirmApprove = Console.ReadLine()?.Trim().ToLower();
+            if (confirmApprove != "yes")
+            {
+                Console.WriteLine("  Cancelled.");
+                return;
+            }
+
+            // Process via Service Bus
+            try
+            {
+                var promotionEvent = new
+                {
+                    proposal.EmployeeId,
+                    proposal.Alias,
+                    NewLevel = newLevel.Level,
+                    NewSalary = newSalary,
+                    OldSalary = proposal.CurrentSalary,
+                    TeamId = employeeTeam?.TeamId ?? ""
+                };
+
+                // Update payroll via Service Bus
+                await _serviceBus.PublishAndProcessAsync<bool>(
+                    _queueNames["PromotionRaise"], promotionEvent, async json =>
+                    {
+                        var payroll = await _payrollRepo.GetPayrollByEmployeeIdAsync(proposal.EmployeeId);
+                        if (payroll != null)
+                        {
+                            payroll.Level = newLevel.Level;
+                            payroll.Salary = newSalary;
+                            payroll.LastUpdated = DateTime.UtcNow;
+                            await _payrollRepo.UpdatePayrollAsync(payroll);
+                        }
+                        return true;
+                    });
+
+                // Deduct team budget
+                if (employeeTeam != null && salaryIncrease > 0)
+                {
+                    employeeTeam.Budget -= salaryIncrease;
+                    await _teamRepo.UpdateTeamAsync(employeeTeam);
+                }
+
+                // Audit log
+                var auditLog = new AuditLog
+                {
+                    Action = "Promotion Approved",
+                    PerformedBy = currentUser.Alias,
+                    PerformedByRole = currentUser.Role.ToString(),
+                    TargetEmployeeId = proposal.EmployeeId,
+                    Details = $"Promoted {proposal.EmployeeName} ({proposal.Alias}) from {proposal.CurrentLevel} (${proposal.CurrentSalary:N0}) to {newLevel.Level} (${newSalary:N0}). Proposed by {proposal.ProposedBy}."
+                };
+                await _auditRepo.LogAsync(auditLog);
+
+                // Update promotion request
+                proposal.Status = "Approved";
+                proposal.NewLevel = newLevel.Level;
+                proposal.NewSalary = newSalary;
+                proposal.ReviewedBy = currentUser.Alias;
+                proposal.ReviewedOn = DateTime.UtcNow;
+                proposal.HRComments = hrComments;
+                await _promotionRepo.UpdateAsync(proposal);
+
+                Console.WriteLine($"\n  Promotion approved! Payroll updated for {proposal.EmployeeName}.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"\n  Error processing promotion: {ex.Message}");
             }
         }
     }
