@@ -113,10 +113,10 @@ var offboardingPipeline = new OffboardingPipeline(
     employeeRepo, teamRepo, payrollRepo,
     authRepo, auditRepo, onboardingRepo, serviceBus, queueNames);
 
-var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, performanceRepo, promotionRepo, employeePipeline, offboardingPipeline, serviceBus, auditRepo, queueNames);
+var employeeManager = new EmployeeManager(teamRepo, payrollRepo, holidayRepo, onboardingRepo, employeeRepo, authRepo, performanceRepo, promotionRepo, employeePipeline, offboardingPipeline, serviceBus, auditRepo, aiManager, queueNames);
 var teamManager = new TeamManager(teamRepo, authRepo);
 var salaryLevelManager = new SalaryLevelManager(payrollRepo, employeeRepo, teamRepo);
-var performanceManager = new PerformanceManager(performanceRepo, teamRepo, authRepo);
+var performanceManager = new PerformanceManager(performanceRepo, teamRepo, authRepo, aiManager);
 var holidayManager = new HolidayManager(holidayRepo, employeeRepo, teamRepo);
 
 while (true)

@@ -2,6 +2,7 @@ using HRManagementService.Models;
 using HRManagementService.Pipeline;
 using HRManagementService.Repository;
 using HRManagementService.Enums;
+using HRManagementService.AIService;
 
 namespace HRManagementService.EmployeeService
 {
@@ -19,6 +20,7 @@ namespace HRManagementService.EmployeeService
         private readonly OffboardingPipeline _offboardingPipeline;
         private readonly ServiceBusService _serviceBus;
         private readonly AuditRepository _auditRepo;
+        private readonly AIManager _aiManager;
         private readonly Dictionary<string, string> _queueNames;
 
         public EmployeeManager(
@@ -34,6 +36,7 @@ namespace HRManagementService.EmployeeService
             OffboardingPipeline offboardingPipeline,
             ServiceBusService serviceBus,
             AuditRepository auditRepo,
+            AIManager aiManager,
             Dictionary<string, string> queueNames)
         {
             _teamRepo = teamRepo;
@@ -48,6 +51,7 @@ namespace HRManagementService.EmployeeService
             _offboardingPipeline = offboardingPipeline;
             _serviceBus = serviceBus;
             _auditRepo = auditRepo;
+            _aiManager = aiManager;
             _queueNames = queueNames;
         }
 
@@ -425,93 +429,151 @@ namespace HRManagementService.EmployeeService
                 return;
             }
 
-            Console.WriteLine("  Select employee to propose for promotion:\n");
-            for (int i = 0; i < teamMembers.Count; i++)
+            while (true)
             {
-                Console.WriteLine($"    {i + 1}. {teamMembers[i].Name} ({teamMembers[i].Alias})");
-            }
-            Console.Write("\n  Choice (0 to cancel): ");
-
-            if (!int.TryParse(Console.ReadLine()?.Trim(), out int sel) || sel < 0 || sel > teamMembers.Count)
-            {
-                Console.WriteLine("  Invalid selection.");
-                return;
-            }
-            if (sel == 0) return;
-
-            var employee = teamMembers[sel - 1];
-
-            // Check for duplicate pending proposal
-            var existingPending = await _promotionRepo.GetPendingByAliasAsync(employee.Alias);
-            if (existingPending != null)
-            {
-                Console.WriteLine($"\n  A promotion proposal for {employee.Name} is already pending (proposed by {existingPending.ProposedBy} on {existingPending.ProposedOn:yyyy-MM-dd}).");
-                return;
-            }
-
-            // Get current payroll
-            var payroll = await _payrollRepo.GetPayrollByEmployeeIdAsync(employee.Id);
-            if (payroll == null)
-            {
-                Console.WriteLine("  No payroll record found for this employee.");
-                return;
-            }
-
-            // Get performance history
-            var perfRecord = await _performanceRepo.GetByAliasAsync(employee.Alias);
-
-            // Display performance summary
-            Console.WriteLine($"\n  --- Employee Details ---");
-            Console.WriteLine($"  Name:          {employee.Name} ({employee.Alias})");
-            Console.WriteLine($"  Current Level: {payroll.Level}");
-            Console.WriteLine($"  Current Salary: ${payroll.Salary:N0}");
-
-            if (perfRecord != null && perfRecord.Reviews.Count > 0)
-            {
-                Console.WriteLine($"\n  --- Performance History ---");
-                foreach (var review in perfRecord.Reviews.OrderByDescending(r => r.Year))
+                Console.WriteLine("  Select employee to propose for promotion:\n");
+                for (int i = 0; i < teamMembers.Count; i++)
                 {
-                    Console.WriteLine($"    Year {review.Year}: Self-Rating: {review.EmployeeRating}/5 | Manager-Rating: {(review.ManagerRating > 0 ? $"{review.ManagerRating}/5" : "Not reviewed")} | Status: {review.Status}");
+                    Console.WriteLine($"    {i + 1}. {teamMembers[i].Name} ({teamMembers[i].Alias})");
                 }
-            }
-            else
-            {
-                Console.WriteLine("\n  No performance reviews found.");
-            }
+                Console.Write("\n  Choice (0 to cancel): ");
 
-            // Manager enters justification
-            Console.Write("\n  Justification for promotion:\n  > ");
-            var justification = Console.ReadLine()?.Trim();
-            if (string.IsNullOrEmpty(justification))
-            {
-                Console.WriteLine("  Justification is required. Cancelled.");
+                if (!int.TryParse(Console.ReadLine()?.Trim(), out int sel) || sel < 0 || sel > teamMembers.Count)
+                {
+                    Console.WriteLine("  Invalid selection.");
+                    return;
+                }
+                if (sel == 0) return;
+
+                var employee = teamMembers[sel - 1];
+
+                // Check for duplicate pending proposal
+                var existingPending = await _promotionRepo.GetPendingByAliasAsync(employee.Alias);
+                if (existingPending != null)
+                {
+                    Console.WriteLine($"\n  A promotion proposal for {employee.Name} is already pending (proposed by {existingPending.ProposedBy} on {existingPending.ProposedOn:yyyy-MM-dd}).");
+                    continue;
+                }
+
+                // Get current payroll
+                var payroll = await _payrollRepo.GetPayrollByEmployeeIdAsync(employee.Id);
+                if (payroll == null)
+                {
+                    Console.WriteLine("  No payroll record found for this employee.");
+                    continue;
+                }
+
+                // Get performance history
+                var perfRecord = await _performanceRepo.GetByAliasAsync(employee.Alias);
+
+                // Display performance summary
+                Console.WriteLine($"\n  --- Employee Details ---");
+                Console.WriteLine($"  Name:          {employee.Name} ({employee.Alias})");
+                Console.WriteLine($"  Current Level: {payroll.Level}");
+                Console.WriteLine($"  Current Salary: ${payroll.Salary:N0}");
+
+                if (perfRecord != null && perfRecord.Reviews.Count > 0)
+                {
+                    Console.WriteLine($"\n  --- Performance History ---");
+                    foreach (var review in perfRecord.Reviews.OrderByDescending(r => r.Year))
+                    {
+                        Console.WriteLine($"    Year {review.Year}: Self-Rating: {review.EmployeeRating}/5 | Manager-Rating: {(review.ManagerRating > 0 ? $"{review.ManagerRating}/5" : "Not reviewed")} | Status: {review.Status}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("\n  No performance reviews found.");
+                }
+
+                // Offer AI promotion advice
+                string? justification = null;
+                Console.Write("\n  Would you like AI to assess promotion readiness? (y/n): ");
+                if (Console.ReadLine()?.Trim().ToLower() == "y")
+                {
+                    Console.WriteLine("\n  Analyzing with AI...\n");
+
+                    var perfSummary = "No performance reviews on record.";
+                    if (perfRecord != null && perfRecord.Reviews.Count > 0)
+                    {
+                        var reviewLines = perfRecord.Reviews.OrderByDescending(r => r.Year)
+                            .Select(r => $"Year {r.Year}: Self={r.EmployeeRating}/5, Manager={( r.ManagerRating > 0 ? $"{r.ManagerRating}/5" : "N/A")}, Accomplishments: {r.Accomplishments}");
+                        perfSummary = string.Join("\n", reviewLines);
+                    }
+
+                    var systemPrompt = "You are a promotion advisor for managers. Based on the employee's performance history, current level, and salary, assess whether they are ready for promotion. Provide a clear recommendation (Ready / Not Yet / Needs More Data) with a brief justification. Also suggest what the manager should write as justification if recommending. Return in this format:\nRecommendation: <Ready/Not Yet/Needs More Data>\nReason: <brief reason>\nSuggested Justification: <what manager can write>\nKeep each section under 2 sentences.";
+                    var userPrompt = $"Employee: {employee.Name} ({employee.Alias})\nCurrent Level: {payroll.Level}\nCurrent Salary: ${payroll.Salary:N0}\nPerformance History:\n{perfSummary}";
+
+                    var aiResponse = await _aiManager.GetCompletionAsync(systemPrompt, userPrompt);
+                    Console.WriteLine("  --- AI Promotion Advice ---");
+                    Console.WriteLine($"  {aiResponse}");
+                    Console.WriteLine("  ----------------------------\n");
+
+                    Console.WriteLine("  What would you like to do?");
+                    Console.WriteLine("    1. Use AI suggested justification");
+                    Console.WriteLine("    2. Write my own justification");
+                    Console.WriteLine("    3. Skip — check another employee");
+                    Console.Write("\n  Choice: ");
+
+                    var aiChoice = Console.ReadLine()?.Trim();
+                    if (aiChoice == "3")
+                    {
+                        Console.WriteLine("\n  Skipped. Returning to employee list.\n");
+                        continue;
+                    }
+                    else if (aiChoice == "1")
+                    {
+                        var justIdx = aiResponse.IndexOf("Suggested Justification:", StringComparison.OrdinalIgnoreCase);
+                        if (justIdx >= 0)
+                        {
+                            justification = aiResponse.Substring(justIdx + "Suggested Justification:".Length).Trim();
+                            Console.WriteLine($"\n  Using AI justification: {justification}");
+                        }
+                        else
+                        {
+                            Console.WriteLine("  Could not parse AI justification. Please enter manually.");
+                        }
+                    }
+                }
+
+                // Manager enters justification (if not already set by AI)
+                if (string.IsNullOrEmpty(justification))
+                {
+                    Console.Write("\n  Justification for promotion:\n  > ");
+                    justification = Console.ReadLine()?.Trim();
+                }
+
+                if (string.IsNullOrEmpty(justification))
+                {
+                    Console.WriteLine("  Justification is required. Cancelled.");
+                    return;
+                }
+
+                // Confirm
+                Console.Write("\n  Submit promotion proposal? (yes/no): ");
+                var confirm = Console.ReadLine()?.Trim().ToLower();
+                if (confirm != "yes")
+                {
+                    Console.WriteLine("  Cancelled.");
+                    return;
+                }
+
+                var request = new PromotionRequest
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    EmployeeId = employee.Id,
+                    Alias = employee.Alias,
+                    EmployeeName = employee.Name,
+                    CurrentLevel = payroll.Level,
+                    CurrentSalary = payroll.Salary,
+                    ProposedBy = currentUser.Alias,
+                    Justification = justification,
+                    ProposedOn = DateTime.UtcNow
+                };
+
+                await _promotionRepo.CreateAsync(request);
+                Console.WriteLine($"\n  Promotion proposal submitted for {employee.Name}. HR will review it.");
                 return;
             }
-
-            // Confirm
-            Console.Write("\n  Submit promotion proposal? (yes/no): ");
-            var confirm = Console.ReadLine()?.Trim().ToLower();
-            if (confirm != "yes")
-            {
-                Console.WriteLine("  Cancelled.");
-                return;
-            }
-
-            var request = new PromotionRequest
-            {
-                Id = Guid.NewGuid().ToString(),
-                EmployeeId = employee.Id,
-                Alias = employee.Alias,
-                EmployeeName = employee.Name,
-                CurrentLevel = payroll.Level,
-                CurrentSalary = payroll.Salary,
-                ProposedBy = currentUser.Alias,
-                Justification = justification,
-                ProposedOn = DateTime.UtcNow
-            };
-
-            await _promotionRepo.CreateAsync(request);
-            Console.WriteLine($"\n  Promotion proposal submitted for {employee.Name}. HR will review it.");
         }
 
         public async Task ReviewPromotionAsync(AuthUser currentUser)
