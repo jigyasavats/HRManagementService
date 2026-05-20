@@ -313,7 +313,7 @@ namespace HRManagementService.EmployeeService
             }
         }
 
-        public async Task TerminateEmployeeAsync(AuthUser currentUser)
+        public async Task TerminateEmployeeAsync(AuthUser currentUser, Func<Permission, string, Task<bool>>? scopeChecker = null)
         {
             Console.WriteLine("\n========================================");
             Console.WriteLine("   Terminate Employee");
@@ -345,6 +345,9 @@ namespace HRManagementService.EmployeeService
             if (sel == 0) return;
 
             var employee = activeEmployees[sel - 1];
+
+            if (scopeChecker != null && !await scopeChecker(Permission.TerminateEmployee, employee.Alias))
+                return;
 
             // Check if this employee is a manager
             var allTeams = await _teamRepo.GetAllTeamsAsync();
@@ -400,7 +403,7 @@ namespace HRManagementService.EmployeeService
             }
         }
 
-        public async Task ProposePromotionAsync(AuthUser currentUser)
+        public async Task ProposePromotionAsync(AuthUser currentUser, Func<Permission, string, Task<bool>>? scopeChecker = null)
         {
             Console.WriteLine("\n========================================");
             Console.WriteLine("   Propose Promotion");
@@ -446,6 +449,9 @@ namespace HRManagementService.EmployeeService
                 if (sel == 0) return;
 
                 var employee = teamMembers[sel - 1];
+
+                if (scopeChecker != null && !await scopeChecker(Permission.ProposePromotion, employee.Alias))
+                    continue;
 
                 // Check for duplicate pending proposal
                 var existingPending = await _promotionRepo.GetPendingByAliasAsync(employee.Alias);

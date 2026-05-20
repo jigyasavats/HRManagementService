@@ -90,33 +90,14 @@ namespace HRManagementService.PayrollService
             }
         }
 
-        public async Task CheckSomeonesSalaryAsync(AuthUser currentUser)
+        public async Task CheckSomeonesSalaryAsync(AuthUser currentUser, Func<Permission, string, Task<bool>>? scopeChecker = null)
         {
             Console.WriteLine("\n========================================");
             Console.WriteLine("   Check Employee Salary");
             Console.WriteLine("========================================\n");
 
-            List<Employee> searchable;
-
-            if (currentUser.Role == UserRole.HR)
-            {
-                searchable = await _employeeRepo.GetAllEmployeesAsync();
-            }
-            else if (currentUser.Role == UserRole.Manager)
-            {
-                // Manager can only see their team members
-                var allTeams = await _teamRepo.GetAllTeamsAsync();
-                var myTeams = allTeams.Where(t => t.ManagerId == currentUser.Alias).ToList();
-                var memberAliases = myTeams.SelectMany(t => t.EmployeeIds).ToHashSet();
-
-                var allEmployees = await _employeeRepo.GetAllEmployeesAsync();
-                searchable = allEmployees.Where(e => memberAliases.Contains(e.Alias)).ToList();
-            }
-            else
-            {
-                Console.WriteLine("Access denied.");
-                return;
-            }
+            var searchable = await _employeeRepo.GetAllEmployeesAsync();
+            searchable = searchable.Where(e => e.Alias != currentUser.Alias).ToList();
 
             if (searchable.Count == 0)
             {
@@ -139,6 +120,10 @@ namespace HRManagementService.PayrollService
             if (sel == 0) return;
 
             var employee = searchable[sel - 1];
+
+            if (scopeChecker != null && !await scopeChecker(Permission.CheckAnySalary, employee.Alias))
+                return;
+
             var payroll = await _payrollRepo.GetPayrollByEmployeeIdAsync(employee.Id);
 
             if (payroll == null)

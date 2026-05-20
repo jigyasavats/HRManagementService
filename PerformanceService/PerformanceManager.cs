@@ -1,6 +1,7 @@
 using HRManagementService.Models;
 using HRManagementService.Repository;
 using HRManagementService.AIService;
+using HRManagementService.Enums;
 
 namespace HRManagementService.PerformanceService
 {
@@ -225,7 +226,7 @@ namespace HRManagementService.PerformanceService
             }
         }
 
-        public async Task ReviewTeamPerformanceAsync(AuthUser currentUser)
+        public async Task ReviewTeamPerformanceAsync(AuthUser currentUser, Func<Permission, string, Task<bool>>? scopeChecker = null)
         {
             Console.WriteLine("\n========================================");
             Console.WriteLine("   Team Performance Review");
@@ -286,6 +287,9 @@ namespace HRManagementService.PerformanceService
             if (sel == 0) return;
 
             var selected = pendingMembers[sel - 1];
+
+            if (scopeChecker != null && !await scopeChecker(Permission.ReviewTeamPerformance, selected.alias))
+                return;
 
             // Show employee's review
             Console.WriteLine($"\n  --- {selected.alias}'s Review ({selected.review.Year}) ---");
