@@ -51,10 +51,69 @@ A comprehensive HR Management System built with **.NET 10** as a console applica
   3. **StateRule** — Is target employee active? (Employee DB lookup)
 - **Callback Injection** — Services receive `Func<Permission, string, Task<bool>>` for scope checks (Dependency Inversion)
 
-### AI Integration (Azure OpenAI)
-- **Performance Review Assistant** — AI drafts review comments and suggests ratings
-- **Promotion Advisor** — AI analyzes performance history for promotion readiness
-- **HR Policy Chatbot** — Interactive Q&A about company policies
+### AI Integration (Azure OpenAI — GPT-4o)
+
+The application integrates Azure OpenAI at three key points where AI adds real business value:
+
+#### 1. Employee Performance Review Assistant
+When an employee submits their self-assessment, AI can review and improve the draft:
+```
+Employee writes self-review → AI rewrites it professionally → Employee chooses:
+  1. Replace my draft with AI suggestion
+  2. Edit myself
+  3. Keep my original
+```
+- **System Prompt:** Rewrites accomplishments, improvements, and goals to be stronger and more professional
+- **Structured Response Parsing:** AI returns in `Accomplishments: ... Improvements: ... Goals: ...` format, parsed with `IndexOf`-based extraction
+
+#### 2. Manager Review Assistant
+When a manager reviews their reportee's performance, AI drafts a review comment:
+```
+Manager sees employee's self-review → AI suggests comment + rating → Manager chooses:
+  1. Use AI suggestion as my review
+  2. Write my own review
+  3. Write my own (using AI as reference)
+```
+- **System Prompt:** Generates a constructive manager comment and fair rating (1-5) based on employee's self-assessment
+- **Response Format:** `Comment: <text> Rating: <1-5>` — parsed with `IndexOf` + `TakeWhile(char.IsDigit)` to handle "4/5" format
+
+#### 3. Promotion Advisor
+When a manager proposes an employee for promotion, AI analyzes readiness:
+```
+Manager selects employee → Views performance history → AI assesses:
+  Recommendation: Ready / Not Yet / Needs More Data
+  Reason: <brief analysis>
+  Suggested Justification: <what manager can write>
+```
+- **Input Context:** Performance history (ratings across years), current level, salary, team info
+- **3 Options:** Use AI justification / Write own / Skip (check another employee)
+
+#### 4. HR Policy Chatbot
+Interactive conversational AI available to all roles (HR, Manager, Employee):
+```
+You: How many holidays do I get?
+HR Bot: Employees get fixed public holidays plus a personal holiday bank 
+        with casual, sick, and earned leave...
+```
+- **System Prompt:** Contains full company policy context (holidays, promotions, salary levels, performance reviews, termination, teams)
+- **Loop-Based Chat:** Continuous conversation until user types `exit`
+- **Temperature: 0.3** — Low randomness for consistent business answers
+- **MaxOutputTokenCount: 800** — ~600 words per response
+
+#### AI Architecture
+```
+AIManager.cs
+├── AzureOpenAIClient (connection to Azure OpenAI resource)
+│   └── ChatClient (scoped to GPT-4o deployment)
+├── GetCompletionAsync(systemPrompt, userPrompt)  → Generic completion
+└── StartHRChatbotAsync()                          → Interactive chat loop
+```
+
+**Design Decisions:**
+- `AzureOpenAIClient` = like `CosmosClient` (connection to resource). `ChatClient` = like `Container` (scoped to deployment)
+- Temperature 0.3 for all business use cases (low randomness, consistent outputs)
+- Structured response parsing using `IndexOf`-based marker extraction instead of line-by-line splitting (handles multi-line AI responses)
+- AI is always **optional** — user can skip AI suggestions and write manually
 
 ### Event-Driven Pipeline
 - **Service Bus Queues** — Async processing for onboarding, offboarding, promotions, payroll
